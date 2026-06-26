@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System dependencies for PangoCairo (Burmese/Khmer text rendering)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpango1.0-dev \
+    libcairo2-dev \
+    gir1.2-pango-1.0 \
+    gir1.2-pangocairo-1.0 \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/ ./backend/
+COPY idea.md ./
+
+# Create upload/output directories
+RUN mkdir -p backend/uploads backend/outputs backend/fonts
+
+EXPOSE 8000
+
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

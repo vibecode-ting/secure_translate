@@ -1,0 +1,37 @@
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# --- Database ---
+sqlalchemy==2.0.36
+pydantic-settings==2.7.1
+
+# --- Task queue ---
+celery[redis]==5.4.0
+redis==5.2.1
+
+# --- OCR ---
+rapidocr-onnxruntime==1.4.4
+
+# --- PDF processing ---
+pymupdf==1.25.3
+
+# --- Image processing ---
+Pillow==11.1.0
+opencv-python-headless==4.11.0.86
+
+# --- Translation APIs ---
+google-generativeai==0.8.4
+requests==2.32.3
+httpx==0.28.1
+
+# --- Utilities ---
+python-dotenv==1.0.1
+aiofiles==24.1.0
+numpy==2.2.1
+
+# --- Testing ---
+pytest==8.3.4
+pytest-asyncio==0.25.0
+httpx==0.28.1
