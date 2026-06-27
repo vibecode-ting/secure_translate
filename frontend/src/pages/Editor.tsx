@@ -8,6 +8,18 @@ import { useDocument, type Document } from '../hooks/useDocument';
 import { useRegions, type Region } from '../hooks/useRegions';
 import { api } from '../api/client';
 
+// Backend job response
+interface TranslationJob {
+  id: string;
+  document_id: string;
+  status: string;
+  progress: number;
+  pages_completed: number;
+  total_pages: number;
+  error_message?: string;
+  output_filename?: string;
+}
+
 export default function Editor() {
   const { documentId } = useParams<{ documentId: string }>();
   const { getDocument, detectRegions, loading: docLoading } = useDocument();
@@ -25,6 +37,7 @@ export default function Editor() {
   const [translating, setTranslating] = useState(false);
   const [translationProgress, setTranslationProgress] = useState(0);
   const [translationStatus, setTranslationStatus] = useState('');
+  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadDocument = useCallback(async () => {
@@ -101,51 +114,69 @@ export default function Editor() {
     setError(null);
 
     try {
-      await api.post(`/documents/${documentId}/translate`, {
+      // Create a translation job via the jobs API
+      const job = await api.post<TranslationJob>('/jobs/', {
+        document_id: documentId,
         source_language: sourceLanguage,
         target_language: targetLanguage,
         engine,
       });
 
-      // Poll for progress
+      setCurrentJobId(job.id);
+      setTranslationStatus('Translation job created...');
+
+      // Poll for progress using the job ID
       const poll = setInterval(async () => {
         try {
-          const status = await api.get<{
-            progress: number;
-            status: string;
-            completed: boolean;
-          }>(`/documents/${documentId}/translate/status`);
+          const jobStatus = await api.get<TranslationJob>(`/jobs/${job.id}`);
 
-          setTranslationProgress(status.progress);
-          setTranslationStatus(status.status);
+          setTranslationProgress(jobStatus.progress);
+          setTranslationStatus(
+            jobStatus.status === 'running'
+              ? `Translating page ${jobStatus.pages_completed} of ${jobStatus.total_pages}...`
+              : jobStatus.status
+          );
 
-          if (status.completed) {
+          if (jobStatus.status === 'completed') {
             clearInterval(poll);
             setTranslating(false);
+            setCurrentJobId(null);
             await loadDocument();
+          } else if (jobStatus.status === 'failed') {
+            clearInterval(poll);
+            setTranslating(false);
+            setCurrentJobId(null);
+            setError(jobStatus.error_message || 'Translation failed');
+          } else if (jobStatus.status === 'cancelled') {
+            clearInterval(poll);
+            setTranslating(false);
+            setCurrentJobId(null);
+            setTranslationStatus('Translation cancelled');
           }
         } catch {
           clearInterval(poll);
           setTranslating(false);
+          setCurrentJobId(null);
           setError('Failed to check translation status');
         }
       }, 2000);
-    } catch {
+    } catch (err) {
       setTranslating(false);
-      setError('Translation failed');
+      setError(err instanceof Error ? err.message : 'Translation failed');
     }
   };
 
   const handleCancelTranslation = async () => {
-    if (!documentId) return;
+    if (!currentJobId) return;
     try {
-      await api.post(`/documents/${documentId}/translate/cancel`);
+      await api.post(`/jobs/${currentJobId}/cancel`);
     } catch {
       // ignore
     }
     setTranslating(false);
     setTranslationProgress(0);
     setTranslationStatus('');
+    setCurrentJobId(null);
   };
 
   if (docLoading && !document) {

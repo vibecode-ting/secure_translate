@@ -1,17 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import FileUploader from '../components/Upload/FileUploader';
-import { api } from '../api/client';
-import type { Document } from '../hooks/useDocument';
+import { useDocument, type Document } from '../hooks/useDocument';
 
 export default function Home() {
   const [recentDocs, setRecentDocs] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
+  const { listDocuments } = useDocument();
 
   useEffect(() => {
     const fetchRecent = async () => {
       try {
-        const docs = await api.get<Document[]>('/documents');
+        const docs = await listDocuments();
         setRecentDocs(docs.slice(0, 5));
       } catch {
         // Silently fail — recent docs are non-critical
@@ -20,7 +20,7 @@ export default function Home() {
       }
     };
     fetchRecent();
-  }, []);
+  }, [listDocuments]);
 
   return (
     <div className="max-w-4xl mx-auto space-y-12">

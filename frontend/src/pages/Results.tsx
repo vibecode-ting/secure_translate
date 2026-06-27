@@ -3,11 +3,27 @@ import { useParams, Link } from 'react-router-dom';
 import ResultViewer from '../components/Output/ResultViewer';
 import DownloadButton from '../components/Output/DownloadButton';
 import { useDocument, type Document } from '../hooks/useDocument';
+import { api } from '../api/client';
+
+// Backend job response
+interface TranslationJob {
+  id: string;
+  document_id: string;
+  status: string;
+  output_filename?: string;
+}
+
+interface JobsResponse {
+  document_id: string;
+  total: number;
+  items: TranslationJob[];
+}
 
 export default function Results() {
   const { documentId } = useParams<{ documentId: string }>();
   const { getDocument, loading } = useDocument();
   const [document, setDocument] = useState<Document | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadDocument = useCallback(async () => {
@@ -20,9 +36,23 @@ export default function Results() {
     }
   }, [documentId, getDocument]);
 
+  const loadJob = useCallback(async () => {
+    if (!documentId) return;
+    try {
+      const response = await api.get<JobsResponse>(`/jobs/document/${documentId}`);
+      const completedJob = response.items.find(j => j.status === 'completed');
+      if (completedJob) {
+        setJobId(completedJob.id);
+      }
+    } catch {
+      // ignore - job may not exist
+    }
+  }, [documentId]);
+
   useEffect(() => {
     loadDocument();
-  }, [loadDocument]);
+    loadJob();
+  }, [loadDocument, loadJob]);
 
   if (loading && !document) {
     return (
@@ -64,7 +94,7 @@ export default function Results() {
             </svg>
             Edit
           </Link>
-          <DownloadButton documentId={document.id} filename={document.filename} />
+          <DownloadButton documentId={document.id} jobId={jobId || undefined} filename={document.filename} />
         </div>
       </div>
 

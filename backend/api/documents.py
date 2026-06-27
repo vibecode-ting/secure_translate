@@ -262,6 +262,77 @@ def get_page_image(
         )
 
 
+@router.get("/{document_id}/pages/{page_number}/translated")
+def get_translated_page_image(
+    document_id: str,
+    page_number: int,
+    job_id: str = Query(..., description="Translation job ID"),
+    db: Session = Depends(get_db),
+):
+    """Serve a rendered translated page image. For PDFs, render from the translated output."""
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if page_number < 0 or page_number >= document.page_count:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Page {page_number} out of range (0-{document.page_count - 1})",
+        )
+
+    # Get the translation job
+    job = (
+        db.query(TranslationJob)
+        .filter(TranslationJob.id == job_id, TranslationJob.document_id == document_id)
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Translation job not found")
+
+    if not job.output_filename:
+        raise HTTPException(status_code=404, detail="No translated output available")
+
+    output_path = settings.OUTPUT_DIR / job.output_filename
+    if not output_path.exists():
+        raise HTTPException(status_code=404, detail="Translated file not found on disk")
+
+    if document.doc_type == DocumentType.PDF:
+        # Render translated PDF page to image
+        try:
+            import pymupdf
+
+            pdf_doc = pymupdf.open(str(output_path))
+            page = pdf_doc[page_number]
+            # Render at configured DPI
+            zoom = settings.OCR_DPI / 72.0
+            mat = pymupdf.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat)
+
+            # Save rendered page as temporary PNG
+            page_image_name = f"{document_id}_translated_page_{page_number}.png"
+            page_image_path = settings.OUTPUT_DIR / page_image_name
+            pix.save(str(page_image_path))
+
+            pdf_doc.close()
+
+            return FileResponse(
+                path=str(page_image_path),
+                media_type="image/png",
+                filename=page_image_name,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to render translated PDF page: {e}")
+    else:
+        # For images, return the translated output directly
+        ext = output_path.suffix.lower()
+        media_type = "image/png" if ext == ".png" else "image/jpeg"
+        return FileResponse(
+            path=str(output_path),
+            media_type=media_type,
+            filename=f"translated_{document.original_filename}",
+        )
+
+
 @router.post("/{document_id}/detect")
 def detect_regions(
     document_id: str,
@@ -290,7 +361,28 @@ def detect_regions(
             raise HTTPException(status_code=404, detail="Document file not found on disk")
 
         # Run OCR detection across all pages
-        detected_regions = detect_text_regions(str(file_path), document.doc_type, document.page_count)
+        detected_regions = []
+        if document.doc_type == DocumentType.PDF:
+            import pymupdf
+            pdf_doc = pymupdf.open(str(file_path))
+            for page_num in range(document.page_count):
+                page = pdf_doc[page_num]
+                zoom = settings.OCR_DPI / 72.0
+                mat = pymupdf.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat)
+                page_img_path = settings.UPLOAD_DIR / f"{document_id}_page_{page_num}.png"
+                pix.save(str(page_img_path))
+                page_regions = detect_text_regions(str(page_img_path))
+                for r in page_regions:
+                    r["page_number"] = page_num
+                detected_regions.extend(page_regions)
+                page_img_path.unlink(missing_ok=True)
+            pdf_doc.close()
+        else:
+            page_regions = detect_text_regions(str(file_path))
+            for r in page_regions:
+                r["page_number"] = 0
+            detected_regions = page_regions
 
         # Clear any existing auto-detected regions for this document
         db.query(Region).filter(

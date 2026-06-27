@@ -15,13 +15,19 @@ def _get_engine(engine_name: str):
     """Instantiate the requested translation engine."""
     if engine_name == "gemini":
         from backend.engines.gemini_engine import GeminiEngine
-        return GeminiEngine()
+        if not settings.GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY not configured")
+        return GeminiEngine(api_key=settings.GEMINI_API_KEY, model=settings.GEMINI_MODEL)
     elif engine_name == "azure":
         from backend.engines.azure_engine import AzureEngine
-        return AzureEngine()
+        if not settings.AZURE_TRANSLATOR_KEY:
+            raise ValueError("AZURE_TRANSLATOR_KEY not configured")
+        return AzureEngine(api_key=settings.AZURE_TRANSLATOR_KEY, region=settings.AZURE_TRANSLATOR_REGION)
     elif engine_name == "google":
         from backend.engines.google_engine import GoogleEngine
-        return GoogleEngine()
+        if not settings.GOOGLE_TRANSLATE_API_KEY:
+            raise ValueError("GOOGLE_TRANSLATE_API_KEY not configured")
+        return GoogleEngine(api_key=settings.GOOGLE_TRANSLATE_API_KEY)
     else:
         raise ValueError(f"Unknown translation engine: {engine_name}")
 

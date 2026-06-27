@@ -27,13 +27,24 @@ _ENGINE_MAP: dict[str, type[TranslationEngine]] = {
 
 def _get_engine(name: str) -> TranslationEngine:
     """Instantiate a translation engine by name."""
-    cls = _ENGINE_MAP.get(name.lower())
-    if cls is None:
+    name = name.lower()
+    if name == "gemini":
+        if not settings.GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY not configured")
+        return GeminiEngine(api_key=settings.GEMINI_API_KEY, model=settings.GEMINI_MODEL)
+    elif name == "azure":
+        if not settings.AZURE_TRANSLATOR_KEY:
+            raise ValueError("AZURE_TRANSLATOR_KEY not configured")
+        return AzureEngine(api_key=settings.AZURE_TRANSLATOR_KEY, region=settings.AZURE_TRANSLATOR_REGION)
+    elif name == "google":
+        if not settings.GOOGLE_TRANSLATE_API_KEY:
+            raise ValueError("GOOGLE_TRANSLATE_API_KEY not configured")
+        return GoogleEngine(api_key=settings.GOOGLE_TRANSLATE_API_KEY, project_id=settings.GOOGLE_PROJECT_ID)
+    else:
         raise ValueError(
             f"Unknown translation engine '{name}'. "
-            f"Available: {', '.join(_ENGINE_MAP)}"
+            f"Available: gemini, azure, google"
         )
-    return cls()
 
 
 class TranslationPipeline:
