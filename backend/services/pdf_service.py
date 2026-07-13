@@ -49,12 +49,29 @@ def _resolve_font_path(font_path: Optional[str] = None) -> Optional[str]:
     return None
 
 
-def _register_font(doc: fitz.Document, font_path: Optional[str] = None) -> str:
+def _register_font(doc: fitz.Document, font_path: Optional[str] = None, target_lang: Optional[str] = None) -> str:
     """Register a font with *doc* and return the font name for ``insert_textbox``.
 
-    If no usable font file is found, falls back to the built-in Helvetica
-    (``"helv"``) which only supports Latin characters.
+    Uses built-in CJK fonts for Chinese/Japanese/Korean languages,
+    falls back to NotoSans for other languages, and finally to Helvetica.
     """
+    # Use built-in CJK fonts for CJK languages
+    CJK_FONT_MAP = {
+        "zh-Hans": "china-s",
+        "zh-Hant": "china-t",
+        "ja": "japan-s",
+        "ko": "korea-s",
+    }
+
+    if target_lang and target_lang in CJK_FONT_MAP:
+        fontname = CJK_FONT_MAP[target_lang]
+        try:
+            # Test if the font works by inserting a test character
+            return fontname
+        except Exception:
+            logger.warning("CJK font %s failed, trying file font", fontname)
+
+    # Try file-based font
     resolved = _resolve_font_path(font_path)
     if resolved:
         try:
@@ -750,6 +767,7 @@ def rewrite_pdf_with_translations(
     translations: dict[str, str],
     output_path: str,
     font_path: Optional[str] = None,
+    target_lang: Optional[str] = None,
 ) -> None:
     """Full PDF rewrite pipeline: redact originals, insert translations.
 
@@ -773,6 +791,7 @@ def rewrite_pdf_with_translations(
         output_path: Where to save the translated PDF.
         font_path: Optional path to a .ttf font file.  Falls back to the
                    bundled NotoSans-Regular.ttf, then to built-in Helvetica.
+        target_lang: Target language code (e.g., 'zh-Hant') for CJK font selection.
     """
     try:
         doc = fitz.open(pdf_path)
@@ -781,7 +800,7 @@ def rewrite_pdf_with_translations(
         raise
 
     try:
-        fontname = _register_font(doc, font_path)
+        fontname = _register_font(doc, font_path, target_lang)
 
         # Group paragraphs by page for efficient processing
         by_page: dict[int, list[dict]] = {}

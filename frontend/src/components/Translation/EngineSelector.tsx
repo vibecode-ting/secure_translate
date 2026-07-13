@@ -5,6 +5,11 @@ interface EngineSelectorProps {
 
 const ENGINES = [
   {
+    id: 'mymemory',
+    name: 'MyMemory (Free)',
+    description: 'Free translation engine, no API key required',
+  },
+  {
     id: 'gemini',
     name: 'Gemini',
     description: 'Google AI with strong multilingual support',

@@ -94,7 +94,7 @@ def get_config():
             {"code": "ko", "name": "Korean"},
             {"code": "th", "name": "Thai"},
         ],
-        "availableEngines": ["gemini", "azure", "google"],
+        "availableEngines": ["gemini", "azure", "google", "mymemory"],
     }
 
 

@@ -26,7 +26,7 @@ export default function Editor() {
 
   const [sourceLanguage, setSourceLanguage] = useState('auto');
   const [targetLanguage, setTargetLanguage] = useState('en');
-  const [engine, setEngine] = useState('gemini');
+  const [engine, setEngine] = useState('mymemory');
 
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

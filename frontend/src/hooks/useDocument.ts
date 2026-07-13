@@ -19,7 +19,7 @@ export function useDocument() {
     setLoading(true);
     setError(null);
     try {
-      const doc = await api.upload<Document>('/documents', file);
+      const doc = await api.upload<Document>('/documents/upload', file);
       return doc;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Upload failed';

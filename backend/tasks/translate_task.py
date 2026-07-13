@@ -1,5 +1,6 @@
 """Celery task for document translation — the main processing pipeline."""
 
+import logging
 import traceback
 from datetime import datetime, timezone
 
@@ -9,6 +10,8 @@ from backend.database import SessionLocal
 from backend.models.document import Document, DocumentStatus, DocumentType
 from backend.models.region import Region, RegionType
 from backend.models.job import TranslationJob, JobStatus
+
+logger = logging.getLogger(__name__)
 
 
 def _get_engine(engine_name: str):
@@ -28,6 +31,9 @@ def _get_engine(engine_name: str):
         if not settings.GOOGLE_TRANSLATE_API_KEY:
             raise ValueError("GOOGLE_TRANSLATE_API_KEY not configured in .env")
         return GoogleEngine(api_key=settings.GOOGLE_TRANSLATE_API_KEY, project_id=settings.GOOGLE_PROJECT_ID)
+    elif engine_name == "mymemory":
+        from backend.engines.mymemory_engine import MyMemoryEngine
+        return MyMemoryEngine()
     else:
         raise ValueError(f"Unknown translation engine: {engine_name}")
 
@@ -86,45 +92,33 @@ def _process_pdf_page(
     source_lang: str,
     target_lang: str,
 ) -> list[dict]:
-    """Process a single PDF page: extract text, translate, prepare for in-place replacement."""
-    try:
-        from backend.services.pdf_service import PDFService
-        pdf_service = PDFService()
-        return pdf_service.process_page(
-            file_path=file_path,
-            page_number=page_number,
-            regions=regions,
-            engine=engine,
-            source_lang=source_lang,
-            target_lang=target_lang,
-        )
-    except ImportError:
-        # Fallback: use pymupdf directly for basic extraction + engine for translation
-        import pymupdf
+    """Process a single PDF page: translate text from regions."""
+    results = []
 
-        pdf_doc = pymupdf.open(file_path)
-        page = pdf_doc[page_number]
-        results = []
+    for region in regions:
+        # Use the original_text from OCR detection
+        text = region.original_text or ""
+        if not text.strip():
+            continue
 
-        for region in regions:
-            # Extract text from the region bounding box
-            rect = pymupdf.Rect(region.x, region.y, region.x + region.width, region.y + region.height)
-            text = page.get_text("text", clip=rect).strip()
+        # Translate the text
+        try:
+            translated = engine.translate(text, source_lang, target_lang)
+        except Exception as e:
+            logger.warning("Translation failed for region %s: %s", region.id, e)
+            translated = text  # Fallback to original
 
-            if text:
-                # Translate
-                translated = engine.translate(text, source_lang, target_lang)
-                region.original_text = text
-                region.translated_text = translated
-                results.append({
-                    "region_id": region.id,
-                    "original_text": text,
-                    "translated_text": translated,
-                    "page_number": page_number,
-                })
+        # Save translation to the region
+        region.translated_text = translated
 
-        pdf_doc.close()
-        return results
+        results.append({
+            "region_id": region.id,
+            "original_text": text,
+            "translated_text": translated,
+            "page_number": page_number,
+        })
+
+    return results
 
 
 def _process_image_page(
@@ -303,6 +297,9 @@ def _execute_translation(job_id: str):
 
             all_results.extend(page_results)
 
+            # Flush region translations to DB (so _save_pdf_output can use them)
+            db.flush()
+
             # Update progress
             job.pages_completed = page_num + 1
             job.progress = (page_num + 1) / total_pages
@@ -353,50 +350,35 @@ def _execute_translation(job_id: str):
 
 
 def _save_pdf_output(document: Document, regions: list[Region], job: TranslationJob) -> str:
-    """Save translated PDF with text replacements."""
-    import pymupdf
+    """Save translated PDF using the production rewrite pipeline."""
+    from backend.services.pdf_service import (
+        extract_paragraphs_from_pdf,
+        rewrite_pdf_with_translations,
+    )
 
     file_path = str(settings.UPLOAD_DIR / document.filename)
     output_filename = f"translated_{job.id}_{document.original_filename}"
     output_path = str(settings.OUTPUT_DIR / output_filename)
 
-    try:
-        from backend.services.pdf_service import PDFService
-        pdf_service = PDFService()
-        pdf_service.save_translated(
-            file_path=file_path,
-            regions=regions,
-            output_path=output_path,
-        )
-    except ImportError:
-        # Fallback: basic pymupdf text replacement
-        pdf_doc = pymupdf.open(file_path)
+    # Extract paragraphs from the original PDF
+    paragraphs = extract_paragraphs_from_pdf(file_path)
 
-        for page_num in range(pdf_doc.page_count):
-            page = pdf_doc[page_num]
-            page_regions = [r for r in regions if r.page_number == page_num and r.translated_text]
+    # Build translations dict from regions (region.original_text -> region.translated_text)
+    translations = {}
+    for region in regions:
+        if region.original_text and region.translated_text:
+            translations[region.original_text] = region.translated_text
 
-            for region in page_regions:
-                rect = pymupdf.Rect(
-                    region.x, region.y,
-                    region.x + region.width,
-                    region.y + region.height,
-                )
-                # Redact original text area
-                page.add_redact_annot(rect, fill=(1, 1, 1))
-                page.apply_redactions()
-
-                # Insert translated text
-                font_size = region.font_size or 12
-                page.insert_text(
-                    pymupdf.Point(region.x, region.y + font_size),
-                    region.translated_text,
-                    fontsize=font_size,
-                    fontname="helv",  # Helvetica
-                )
-
-        pdf_doc.save(output_path)
-        pdf_doc.close()
+    # Use the production rewrite pipeline
+    font_path = str(settings.FONT_DIR / "NotoSans-Regular.ttf")
+    rewrite_pdf_with_translations(
+        pdf_path=file_path,
+        paragraphs=paragraphs,
+        translations=translations,
+        output_path=output_path,
+        font_path=font_path,
+        target_lang=job.target_language,
+    )
 
     return output_filename
 
