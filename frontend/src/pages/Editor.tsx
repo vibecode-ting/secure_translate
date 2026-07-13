@@ -1,12 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import DocumentViewer from '../components/Viewer/DocumentViewer';
+import MultiPageViewer from '../components/Viewer/MultiPageViewer';
 import LanguageSelector from '../components/Translation/LanguageSelector';
 import EngineSelector from '../components/Translation/EngineSelector';
 import ProgressBar from '../components/Translation/ProgressBar';
 import { useDocument, type Document } from '../hooks/useDocument';
 import { useRegions, type Region } from '../hooks/useRegions';
 import { api } from '../api/client';
+
+interface JobCreateResponse {
+  id: string;
+  document_id: string;
+  status: string;
+}
 
 export default function Editor() {
   const { documentId } = useParams<{ documentId: string }>();
@@ -22,9 +28,7 @@ export default function Editor() {
   const [targetLanguage, setTargetLanguage] = useState('en');
   const [engine, setEngine] = useState('gemini');
 
-  const [translating, setTranslating] = useState(false);
-  const [translationProgress, setTranslationProgress] = useState(0);
-  const [translationStatus, setTranslationStatus] = useState('');
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadDocument = useCallback(async () => {
@@ -72,7 +76,7 @@ export default function Editor() {
     if (!documentId) return;
     try {
       const region = await createExclusion(documentId, {
-        page: 1, // current page from viewer — simplified
+        page: 1,
         ...rect,
       });
       setRegions((prev) => [...prev, region]);
@@ -95,57 +99,37 @@ export default function Editor() {
 
   const handleTranslate = async () => {
     if (!documentId) return;
-    setTranslating(true);
-    setTranslationProgress(0);
-    setTranslationStatus('Starting translation...');
     setError(null);
 
     try {
-      await api.post(`/documents/${documentId}/translate`, {
+      const job = await api.post<JobCreateResponse>('/jobs', {
+        document_id: documentId,
         source_language: sourceLanguage,
         target_language: targetLanguage,
         engine,
       });
 
-      // Poll for progress
-      const poll = setInterval(async () => {
-        try {
-          const status = await api.get<{
-            progress: number;
-            status: string;
-            completed: boolean;
-          }>(`/documents/${documentId}/translate/status`);
-
-          setTranslationProgress(status.progress);
-          setTranslationStatus(status.status);
-
-          if (status.completed) {
-            clearInterval(poll);
-            setTranslating(false);
-            await loadDocument();
-          }
-        } catch {
-          clearInterval(poll);
-          setTranslating(false);
-          setError('Failed to check translation status');
-        }
-      }, 2000);
-    } catch {
-      setTranslating(false);
-      setError('Translation failed');
+      setActiveJobId(job.id);
+      await loadDocument();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to start translation';
+      setError(msg);
     }
   };
 
-  const handleCancelTranslation = async () => {
-    if (!documentId) return;
-    try {
-      await api.post(`/documents/${documentId}/translate/cancel`);
-    } catch {
-      // ignore
-    }
-    setTranslating(false);
-    setTranslationProgress(0);
-    setTranslationStatus('');
+  const handleTranslationComplete = async () => {
+    setActiveJobId(null);
+    await loadDocument();
+  };
+
+  const handleTranslationError = (msg: string) => {
+    setError(msg);
+    setActiveJobId(null);
+  };
+
+  const handleTranslationCancel = async () => {
+    setActiveJobId(null);
+    await loadDocument();
   };
 
   if (docLoading && !document) {
@@ -172,6 +156,8 @@ export default function Editor() {
 
   const textRegions = regions.filter((r) => r.type === 'text');
   const exclusionRegions = regions.filter((r) => r.type === 'exclusion');
+  const isTranslating = activeJobId !== null;
+  const isCompleted = document.status === 'completed';
 
   return (
     <div className="space-y-4">
@@ -194,7 +180,7 @@ export default function Editor() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {document.status === 'completed' && (
+          {isCompleted && (
             <Link to={`/results/${document.id}`} className="btn-primary">
               View Results
             </Link>
@@ -205,7 +191,7 @@ export default function Editor() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4" style={{ minHeight: '70vh' }}>
         {/* Viewer */}
         <div className="lg:col-span-3 card overflow-hidden">
-          <DocumentViewer
+          <MultiPageViewer
             documentId={document.id}
             totalPages={document.pages}
             regions={regions}
@@ -276,6 +262,7 @@ export default function Editor() {
               targetLanguage={targetLanguage}
               onSourceChange={setSourceLanguage}
               onTargetChange={setTargetLanguage}
+              documentId={documentId}
             />
           </div>
 
@@ -285,22 +272,29 @@ export default function Editor() {
           </div>
 
           {/* Translate button */}
-          <button
-            onClick={handleTranslate}
-            disabled={translating || docLoading}
-            className="btn-primary w-full text-base py-3"
-          >
-            {translating ? 'Translating...' : 'Translate Document'}
-          </button>
+          {isCompleted ? (
+            <Link to={`/results/${document.id}`} className="btn-primary w-full text-base py-3 text-center">
+              View Translated Document
+            </Link>
+          ) : (
+            <button
+              onClick={handleTranslate}
+              disabled={isTranslating || docLoading}
+              className="btn-primary w-full text-base py-3"
+            >
+              {isTranslating ? 'Translating...' : 'Translate Document'}
+            </button>
+          )}
         </div>
       </div>
 
       {/* Progress */}
-      {translating && (
+      {isTranslating && (
         <ProgressBar
-          progress={translationProgress}
-          status={translationStatus}
-          onCancel={handleCancelTranslation}
+          jobId={activeJobId}
+          onComplete={handleTranslationComplete}
+          onError={handleTranslationError}
+          onCancel={handleTranslationCancel}
         />
       )}
     </div>

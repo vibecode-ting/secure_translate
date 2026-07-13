@@ -291,19 +291,48 @@ class TranslationPipeline:
         translations: dict[str, str],
         output_dir: Path,
     ) -> None:
-        """Render a translated PDF using PyMuPDF redaction + insert."""
-        region_dicts = [_region_to_dict(r) for r in regions if r.region_type == RegionType.TEXT]
-        output_path = str(output_dir / f"translated_{document.filename}")
+        """Render a translated PDF using the production-quality rewrite pipeline.
 
+        Steps:
+        1. Extract paragraphs from the source PDF (paragraph-level grouping).
+        2. Match extracted paragraphs to the translated regions from the DB.
+        3. Rewrite the PDF: redact originals, insert translations at same positions.
+        """
+        output_path = str(output_dir / f"translated_{document.filename}")
         font_path = str(settings.FONT_DIR / "NotoSans-Regular.ttf")
 
-        pdf_service.replace_text_in_pdf(
-            pdf_path=str(source_path),
-            translations=translations,
-            regions=region_dicts,
-            output_path=output_path,
-            font_path=font_path,
-        )
+        # Extract paragraphs from the source PDF (groups lines into paragraphs)
+        paragraphs = pdf_service.extract_paragraphs_from_pdf(str(source_path))
+
+        if not paragraphs:
+            # Fallback: use the legacy region-based replacement if extraction yields nothing
+            logger.warning(
+                "Paragraph extraction returned empty for %s, falling back to region-based replacement",
+                source_path,
+            )
+            region_dicts = [_region_to_dict(r) for r in regions if r.region_type == RegionType.TEXT]
+            pdf_service.replace_text_in_pdf(
+                pdf_path=str(source_path),
+                translations=translations,
+                regions=region_dicts,
+                output_path=output_path,
+                font_path=font_path,
+            )
+        else:
+            # Build a paragraph-keyed translation map.
+            # The DB regions are line-level, but the PDF extraction groups them
+            # into paragraphs.  We need to match paragraph text to translations.
+            paragraph_translations = _build_paragraph_translations(
+                paragraphs, translations,
+            )
+
+            pdf_service.rewrite_pdf_with_translations(
+                pdf_path=str(source_path),
+                paragraphs=paragraphs,
+                translations=paragraph_translations,
+                output_path=output_path,
+                font_path=font_path,
+            )
 
         document.output_filename = f"translated_{document.filename}"
         logger.info("PDF output saved to %s", output_path)
@@ -356,3 +385,77 @@ def _region_to_dict(region: Region) -> dict:
         "font_size": region.font_size,
         "region_type": region.region_type.value if region.region_type else "text",
     }
+
+
+def _build_paragraph_translations(
+    paragraphs: list[dict],
+    line_translations: dict[str, str],
+) -> dict[str, str]:
+    """Map paragraph text to translations by combining line-level translations.
+
+    The translation pipeline operates on individual text lines (regions),
+    but the PDF rewrite pipeline works at the paragraph level.  This
+    function bridges the gap: for each paragraph, it looks up the
+    translation for every line that makes up the paragraph and joins them
+    in the same order.
+
+    If a paragraph's text does not match any line translations exactly
+    (e.g., the paragraph was extracted differently), we fall back to
+    concatenating translations for substrings that appear in the
+    paragraph text.
+
+    Args:
+        paragraphs: Paragraph dicts from ``extract_paragraphs_from_pdf``.
+        line_translations: Mapping of original_line_text -> translated_text
+                          (from the DB / translation engine).
+
+    Returns:
+        Mapping of paragraph_text -> translated_paragraph_text.
+    """
+    paragraph_translations: dict[str, str] = {}
+
+    for para in paragraphs:
+        para_text = para.get("text", "").strip()
+        if not para_text:
+            continue
+
+        # Fast path: exact match
+        if para_text in line_translations:
+            paragraph_translations[para_text] = line_translations[para_text]
+            continue
+
+        # The paragraph text contains newline-joined lines.
+        # Try to translate each line individually and join.
+        lines = para_text.split("\n")
+        translated_lines: list[str] = []
+        all_found = True
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                translated_lines.append("")
+                continue
+            if stripped in line_translations:
+                translated_lines.append(line_translations[stripped])
+            else:
+                # Partial match: check if any translation key is a substring
+                found = False
+                for orig, trans in line_translations.items():
+                    if orig.strip() == stripped:
+                        translated_lines.append(trans)
+                        found = True
+                        break
+                if not found:
+                    # No translation found for this line -- keep original
+                    translated_lines.append(stripped)
+                    all_found = False
+
+        if any(t for t in translated_lines if t):  # at least some translation happened
+            paragraph_translations[para_text] = "\n".join(translated_lines)
+
+    logger.debug(
+        "Built %d paragraph translations from %d line translations",
+        len(paragraph_translations), len(line_translations),
+    )
+
+    return paragraph_translations

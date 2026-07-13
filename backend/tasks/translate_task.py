@@ -12,16 +12,22 @@ from backend.models.job import TranslationJob, JobStatus
 
 
 def _get_engine(engine_name: str):
-    """Instantiate the requested translation engine."""
+    """Instantiate the requested translation engine with API keys from config."""
     if engine_name == "gemini":
         from backend.engines.gemini_engine import GeminiEngine
-        return GeminiEngine()
+        if not settings.GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY not configured in .env")
+        return GeminiEngine(api_key=settings.GEMINI_API_KEY, model=settings.GEMINI_MODEL)
     elif engine_name == "azure":
         from backend.engines.azure_engine import AzureEngine
-        return AzureEngine()
+        if not settings.AZURE_TRANSLATOR_KEY:
+            raise ValueError("AZURE_TRANSLATOR_KEY not configured in .env")
+        return AzureEngine(api_key=settings.AZURE_TRANSLATOR_KEY, region=settings.AZURE_TRANSLATOR_REGION or "")
     elif engine_name == "google":
         from backend.engines.google_engine import GoogleEngine
-        return GoogleEngine()
+        if not settings.GOOGLE_TRANSLATE_API_KEY:
+            raise ValueError("GOOGLE_TRANSLATE_API_KEY not configured in .env")
+        return GoogleEngine(api_key=settings.GOOGLE_TRANSLATE_API_KEY, project_id=settings.GOOGLE_PROJECT_ID)
     else:
         raise ValueError(f"Unknown translation engine: {engine_name}")
 
@@ -197,8 +203,18 @@ def _process_image_page(
         return results
 
 
+def run_translation_sync(job_id: str):
+    """Run the translation pipeline synchronously (without Celery)."""
+    return _execute_translation(job_id)
+
+
 @celery_app.task(bind=True, name="translate_document")
 def translate_document(self, job_id: str):
+    """Celery wrapper for the translation pipeline."""
+    return _execute_translation(job_id)
+
+
+def _execute_translation(job_id: str):
     """
     Main translation pipeline.
 

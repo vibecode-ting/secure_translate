@@ -89,20 +89,28 @@ def create_job(body: JobCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(job)
 
-    # Dispatch Celery task
+    # Dispatch translation — try Celery first, fall back to background thread
     try:
         from backend.tasks.translate_task import translate_document
 
         task = translate_document.delay(job.id)
         job.celery_task_id = task.id
         db.commit()
-    except Exception as e:
-        # If Celery dispatch fails, mark job as failed
-        job.status = JobStatus.FAILED
-        job.error_message = f"Failed to dispatch translation task: {e}"
-        document.status = DocumentStatus.FAILED
+    except Exception:
+        # Celery/Redis not available — run in background thread
+        import threading
+        from backend.tasks.translate_task import run_translation_sync
+
+        def _run_sync(job_id: str):
+            """Run translation synchronously (no Celery)."""
+            try:
+                run_translation_sync(job_id)
+            except Exception:
+                pass  # Error is stored in DB by the task
+
+        thread = threading.Thread(target=_run_sync, args=(job.id,), daemon=True)
+        thread.start()
         db.commit()
-        raise HTTPException(status_code=500, detail=f"Failed to dispatch task: {e}")
 
     return _serialize_job(job)
 

@@ -1,9 +1,12 @@
 """Document API routes — upload, list, view, delete, detect, download."""
 
+import io
 import uuid
 import shutil
 from pathlib import Path
 from datetime import datetime, timezone
+
+from PIL import Image
 
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -59,15 +62,15 @@ async def upload_document(
     save_path = settings.UPLOAD_DIR / unique_name
     save_path.write_bytes(content)
 
-    # Extract page count for PDFs
+    # Extract page count and metadata for PDFs
     page_count = 1
+    file_metadata = None
     if doc_type == DocumentType.PDF:
         try:
-            import pymupdf
+            from backend.services.pdf_service import get_pdf_metadata
 
-            pdf_doc = pymupdf.open(str(save_path))
-            page_count = pdf_doc.page_count
-            pdf_doc.close()
+            file_metadata = get_pdf_metadata(str(save_path))
+            page_count = file_metadata.get("page_count", 1)
         except Exception as e:
             # Clean up file on error
             save_path.unlink(missing_ok=True)
@@ -81,6 +84,7 @@ async def upload_document(
         status=DocumentStatus.UPLOADED,
         page_count=page_count,
         file_size_bytes=len(content),
+        metadata_json=file_metadata,
     )
     db.add(document)
     db.commit()
@@ -122,6 +126,7 @@ def list_documents(
                 "status": d.status.value,
                 "page_count": d.page_count,
                 "file_size_bytes": d.file_size_bytes,
+                "metadata": d.metadata_json,
                 "created_at": d.created_at.isoformat() if d.created_at else None,
                 "updated_at": d.updated_at.isoformat() if d.updated_at else None,
             }
@@ -155,6 +160,7 @@ def get_document(document_id: str, db: Session = Depends(get_db)):
         "target_language": document.target_language,
         "progress": document.progress,
         "error_message": document.error_message,
+        "metadata": document.metadata_json,
         "created_at": document.created_at.isoformat() if document.created_at else None,
         "updated_at": document.updated_at.isoformat() if document.updated_at else None,
         "regions": [
@@ -283,14 +289,35 @@ def detect_regions(
     db.commit()
 
     try:
-        from backend.services.ocr_service import detect_text_regions
+        from backend.services.ocr_service import detect_text_regions, detect_text_regions_from_pil
+        import pymupdf
 
         file_path = settings.UPLOAD_DIR / document.filename
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Document file not found on disk")
 
         # Run OCR detection across all pages
-        detected_regions = detect_text_regions(str(file_path), document.doc_type, document.page_count)
+        detected_regions = []
+        if document.doc_type == DocumentType.PDF:
+            # For PDFs: render each page, run OCR on each
+            pdf_doc = pymupdf.open(str(file_path))
+            for page_num in range(min(pdf_doc.page_count, document.page_count)):
+                page = pdf_doc[page_num]
+                zoom = settings.OCR_DPI / 72.0
+                mat = pymupdf.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                page_regions = detect_text_regions_from_pil(img)
+                for r in page_regions:
+                    r["page_number"] = page_num
+                detected_regions.extend(page_regions)
+            pdf_doc.close()
+        else:
+            # For images: run OCR directly
+            page_regions = detect_text_regions(str(file_path))
+            for r in page_regions:
+                r["page_number"] = 0
+            detected_regions = page_regions
 
         # Clear any existing auto-detected regions for this document
         db.query(Region).filter(

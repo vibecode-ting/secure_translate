@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Integer, Float, DateTime, Enum as SAEnum, Text
+from sqlalchemy import Column, String, Integer, Float, DateTime, Enum as SAEnum, Text, JSON
 from sqlalchemy.orm import relationship
 from backend.database import Base
 import enum
@@ -40,6 +40,9 @@ class Document(Base):
     # Processing metadata
     progress = Column(Float, default=0.0)  # 0.0 to 1.0
     error_message = Column(Text, nullable=True)
+
+    # File metadata (JSON — stores PDF-specific info like has_images, title, etc.)
+    metadata_json = Column(JSON, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

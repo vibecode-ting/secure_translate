@@ -11,6 +11,7 @@ from backend.database import init_db
 from backend.api.documents import router as documents_router
 from backend.api.regions import router as regions_router
 from backend.api.jobs import router as jobs_router
+from backend.api.languages import router as languages_router
 
 
 @asynccontextmanager
@@ -30,7 +31,11 @@ app = FastAPI(
 # CORS — allow frontend dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "https://translate.pouchen.online",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,6 +45,7 @@ app.add_middleware(
 app.include_router(documents_router, prefix="/api/documents", tags=["documents"])
 app.include_router(regions_router, prefix="/api/regions", tags=["regions"])
 app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])
+app.include_router(languages_router, prefix="/api/languages", tags=["languages"])
 
 # Serve uploaded/output files (dev only)
 app.mount("/uploads", StaticFiles(directory=str(settings.UPLOAD_DIR)), name="uploads")
@@ -59,6 +65,7 @@ def get_config():
         "maxFileSizeMb": settings.MAX_FILE_SIZE_MB,
         "maxPages": settings.MAX_PAGES,
         "supportedLanguages": [
+            {"code": "auto", "name": "Auto-detect"},
             {"code": "en", "name": "English"},
             {"code": "my", "name": "Burmese"},
             {"code": "zh-Hans", "name": "Simplified Chinese"},
@@ -66,6 +73,9 @@ def get_config():
             {"code": "vi", "name": "Vietnamese"},
             {"code": "km", "name": "Khmer"},
             {"code": "id", "name": "Indonesian"},
+            {"code": "ja", "name": "Japanese"},
+            {"code": "ko", "name": "Korean"},
+            {"code": "th", "name": "Thai"},
         ],
         "availableEngines": ["gemini", "azure", "google"],
     }
