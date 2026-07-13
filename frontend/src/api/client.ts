@@ -30,13 +30,21 @@ async function request<T>(
 
   if (!response.ok) {
     let message = `Request failed with status ${response.status}`;
+    let detail = '';
     try {
       const errorBody = await response.json();
       message = errorBody.detail || errorBody.message || message;
+      detail = errorBody.detail || '';
     } catch {
-      // ignore json parse error
+      // If JSON parse fails, try to get text
+      try {
+        const text = await response.text();
+        if (text) detail = text.substring(0, 500);
+      } catch {
+        // ignore
+      }
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, detail || message);
   }
 
   if (response.status === 204) {
